@@ -1,0 +1,60 @@
+# ==================================
+# General
+# ==================================
+# IDE-specific files
+.vscode/
+.idea/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# ==================================
+# Python Backend
+# ==================================
+# Caches and Temp Files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build artifacts for Python (PyInstaller)
+build/
+dist/
+*.spec
+
+# Virtual Environment
+venv/
+.venv/
+
+# ==================================
+# Qt/C++ Frontend (qmake)
+# ==================================
+# Build directories (e.g., build-salesStatTool-Desktop_Qt_6_5_3_MinGW_64_bit-Debug)
+build-*/
+
+# User-specific project files (contains local paths, etc.)
+*.pro.user
+*.pro.user.*
+*.user
+
+# Compiled object files, libraries, and executables
+*.o
+*.a
+*.so
+*.dll
+*.exe # We only want to track the source, not the compiled output
+
+# Generated files by moc, uic, rcc
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+Makefile*
+
+# ==================================
+# Project Specific
+# ==================================
+/Releases/
+
+# Personal command notes
+commands.txt 
