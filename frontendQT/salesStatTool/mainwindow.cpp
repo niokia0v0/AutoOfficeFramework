@@ -91,7 +91,7 @@ void MainWindow::on_processButton_clicked()
         default: conflictPolicy = "rename";
     }
 
-    // 3. 禁用按钮、清空Log、显示状态
+    // 3. 禁用按钮、清空log、显示状态
     ui->processButton->setEnabled(false);
     ui->plainTextEdit->clear(); // 在开始处理前清空日志区
     ui->plainTextEdit->appendPlainText("--- 开始处理 ---");
