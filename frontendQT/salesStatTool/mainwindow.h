@@ -30,7 +30,7 @@ private slots:
 private:
     Ui::MainWindow *ui;
 
-    // 用于加载和保存设置
+    // 用于加载和保存设置 
     void loadSettings();
     void saveSettings();
 
