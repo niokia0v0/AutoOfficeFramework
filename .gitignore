@@ -43,7 +43,7 @@ build-*/
 *.a
 *.so
 *.dll
-*.exe # We only want to track the source, not the compiled output
+*.exe
 
 # Generated files by moc, uic, rcc
 moc_*.cpp
@@ -55,6 +55,7 @@ Makefile*
 # Project Specific
 # ==================================
 /Releases/
+/prevVersionsSource/
 
-# Personal command notes
-commands.txt 
+# Personal notes
+*.txt 

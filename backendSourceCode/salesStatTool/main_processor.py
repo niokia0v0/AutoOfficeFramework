@@ -5,24 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-#0.文件结构：确保 main_processor.py, identifier.py, TMProcess.py, JDProcess.py, PDDProcess.py, DYProcess.py 这六个文件都在同一个目录下。
-#准备数据：
-#创建一个输入目录，例如 C:\my_input_data。
-#将所有平台的原始 .csv 和 .xlsx 文件放入这个目录。
-#创建一个空的输出目录，例如 D:\my_output_data。
-
-#1.执行命令(在当前路径下)：
-#基本用法（默认重命名）：
-#python main_processor.py C:\my_input_data D:\my_output_data
-#指定为覆盖模式：
-#python main_processor.py C:\my_input_data D:\my_output_data --on-conflict overwrite
-#指定为跳过模式：
-#python main_processor.py C:\my_input_data D:\my_output_data --on-conflict skip
-#查看帮助：
-#python main_processor.py -h
-
-# 动态添加脚本所在目录到Python路径，以便能找到其他模块
-# 这使得脚本可以从任何位置被调用
+# 动态添加脚本所在目录到Python路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 导入自定义模块
@@ -34,8 +17,8 @@ try:
     import DYProcess
 except ImportError as e:
     print(f"错误：无法导入必要的处理模块。请确保所有处理脚本 "
-          f"(identifier.py, TMProcess.py, etc.) 与 main_processor.py 在同一目录下。")
-    print(f"具体错误: {e}")
+          f"(identifier.py, TMProcess.py, etc.) 与 main_processor.py 在同一目录下。", flush=True)
+    print(f"具体错误: {e}", flush=True)
     sys.exit(1)
 
 # --- 平台与处理函数的映射 ---
@@ -64,11 +47,11 @@ def get_safe_output_path(output_dir, base_filename, on_conflict_policy):
         return output_path
 
     if on_conflict_policy == 'skip':
-        print(f"  -> 文件 '{base_filename}' 已存在，策略为【跳过】。")
+        print(f"  -> 文件 '{base_filename}' 已存在，策略【跳过】。", flush=True)
         return None
         
     if on_conflict_policy == 'overwrite':
-        print(f"  -> 文件 '{base_filename}' 已存在，策略为【覆盖】。")
+        print(f"  -> 文件 '{base_filename}' 已存在，策略【覆盖】。", flush=True)
         return output_path
 
     if on_conflict_policy == 'rename':
@@ -78,7 +61,7 @@ def get_safe_output_path(output_dir, base_filename, on_conflict_policy):
             new_filename = f"{name} ({counter}){ext}"
             new_path = os.path.join(output_dir, new_filename)
             if not os.path.exists(new_path):
-                print(f"  -> 文件 '{base_filename}' 已存在，策略为【重命名】为 '{new_filename}'。")
+                print(f"  -> 文件 '{base_filename}' 已存在，策略【重命名】，另存为 '{new_filename}'。", flush=True)
                 return new_path
             counter += 1
     
@@ -114,7 +97,7 @@ def read_dataframe_from_file(file_path):
             return df
 
     except Exception as e:
-        print(f"  -> 错误：读取文件时发生错误: {e}")
+        print(f"  -> 错误：读取文件时发生错误: {e}", flush=True)
         return None
 
     return df
@@ -142,15 +125,15 @@ def main():
 
     # --- 准备工作 ---
     start_time = datetime.now()
-    print("-" * 60)
-    print(f"处理开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"输入目录: {os.path.abspath(args.input_dir)}")
-    print(f"输出目录: {os.path.abspath(args.output_dir)}")
-    print(f"文件冲突策略: {args.on_conflict.upper()}")
-    print("-" * 60)
+    print("-" * 60, flush=True)
+    print(f"处理开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"输入目录: {os.path.abspath(args.input_dir)}", flush=True)
+    print(f"输出目录: {os.path.abspath(args.output_dir)}", flush=True)
+    print(f"文件冲突策略: {args.on_conflict.upper()}", flush=True)
+    print("-" * 60, flush=True)
 
     if not os.path.isdir(args.input_dir):
-        print(f"错误：输入目录不存在 -> '{args.input_dir}'")
+        print(f"错误：输入目录不存在 -> '{args.input_dir}'", flush=True)
         sys.exit(1)
         
     os.makedirs(args.output_dir, exist_ok=True)
@@ -158,21 +141,22 @@ def main():
     processed_files = 0
     skipped_files = 0
     failed_files = 0
+    unidentified_files = 0
     
     # --- 核心处理循环 ---
     for filename in sorted(os.listdir(args.input_dir)):
         if filename.lower().endswith(('.csv', '.xlsx', '.xls')):
             input_path = os.path.join(args.input_dir, filename)
             
-            print(f"发现文件: '{filename}'")
+            print(f"发现文件: '{filename}'", flush=True)
             
             # 1. 识别平台
             platform = identifier.identify_platform(input_path)
             if not platform:
-                print("  -> 平台识别失败，跳过此文件。\n")
-                failed_files += 1
+                print("  -> 平台识别失败，跳过此文件。\n", flush=True)
+                unidentified_files += 1
                 continue
-            print(f"  -> 识别为【{platform}】平台。")
+            print(f"  -> 识别为【{platform}】平台。", flush=True)
 
             # 2. 计算安全输出路径
             base_name_no_ext = os.path.splitext(filename)[0]
@@ -181,52 +165,55 @@ def main():
             
             if output_path is None:
                 skipped_files += 1
-                print("") 
+                print("", flush=True) 
                 continue
 
             # 3. 读取数据为DataFrame
-            print("  -> 正在读取数据...")
+            print("  -> 正在读取数据...", flush=True)
             df_raw = read_dataframe_from_file(input_path)
             if df_raw is None:
-                print("  -> 读取失败，跳过此文件。\n")
+                print("  -> 读取失败，跳过此文件。\n", flush=True)
                 failed_files += 1
                 continue
 
             # 4. 调用对应的平台处理函数
-            print("  -> 正在处理数据...")
+            print("  -> 正在处理数据...", flush=True)
             processor_func = PROCESSOR_MAP.get(platform)
             try:
                 result_workbook = processor_func(df_raw)
             except Exception as e:
-                print(f"  -> 错误: 在处理【{platform}】数据时发生异常: {e}")
+                print(f"  -> 错误: 在处理【{platform}】数据时发生异常: {e}", flush=True)
                 import traceback
-                traceback.print_exc() 
+                # 异常堆栈信息也需要flush
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.flush()
                 result_workbook = None
 
             # 5. 保存结果
             if result_workbook:
-                print(f"  -> 正在保存到: '{os.path.basename(output_path)}'")
+                print(f"  -> 正在保存到: '{os.path.basename(output_path)}'", flush=True)
                 try:
                     result_workbook.save(output_path)
-                    print("  -> 保存成功！\n")
+                    print("  -> 保存成功！\n", flush=True)
                     processed_files += 1
                 except Exception as e:
-                    print(f"  -> 错误：保存文件失败: {e}\n")
+                    print(f"  -> 错误：保存文件失败: {e}\n", flush=True)
                     failed_files += 1
             else:
-                print("  -> 数据处理失败，未生成结果文件。\n")
+                print("  -> 数据处理失败，未生成结果文件。\n", flush=True)
                 failed_files += 1
     
     # --- 结束总结 ---
     end_time = datetime.now()
     duration = end_time - start_time
-    print("-" * 60)
-    print("所有文件处理完毕！")
-    print(f"总耗时: {duration}")
-    print(f"成功处理: {processed_files}个文件")
-    print(f"跳过处理: {skipped_files}个文件")
-    print(f"处理失败: {failed_files}个文件")
-    print("-" * 60)
+    print("-" * 60, flush=True)
+    print("所有文件处理完毕！", flush=True)
+    print(f"处理总耗时: {duration}", flush=True)
+    print(f"成功处理: {processed_files}个文件", flush=True)
+    print(f"跳过处理 (同名文件): {skipped_files}个文件", flush=True)
+    print(f"平台未识别: {unidentified_files}个文件", flush=True)
+    print(f"处理失败 (错误): {failed_files}个文件", flush=True)
+    print("-" * 60, flush=True)
 
 if __name__ == "__main__":
     main()
