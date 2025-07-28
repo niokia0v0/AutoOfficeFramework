@@ -57,5 +57,7 @@ Makefile*
 /Releases/
 /prevVersionsSource/
 
-# Personal notes
+# Personal notes etc
 *.txt 
+
+/backendSourceCode/salesStatTool/upx.exe
