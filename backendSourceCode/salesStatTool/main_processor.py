@@ -81,7 +81,13 @@ def read_dataframe_from_file(file_path):
     df = None
     try:
         if file_ext == '.csv':
-            df = pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding='utf-8-sig')
+            try:
+                # 优先尝试用 utf-8-sig 读取
+                df = pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding='utf-8-sig')
+            except UnicodeDecodeError:
+                # 如果UTF-8解码失败，则回退到GBK编码再次尝试
+                print(f"  -> UTF-8解码失败，尝试使用GBK编码读取完整文件...")
+                df = pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding='gbk')
         elif file_ext in ['.xlsx', '.xls']:
             df = pd.read_excel(file_path, dtype=str, engine='openpyxl', keep_default_na=False)
         
@@ -107,7 +113,7 @@ def main():
     主执行函数，负责整个处理流程。
     """
     parser = argparse.ArgumentParser(
-        description="电商平台订单数据自动化处理工具。",
+        description="电商平台销售数据处理工具。",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("input_dir", help="包含原始数据文件 (.csv, .xlsx) 的输入目录。")
@@ -115,7 +121,7 @@ def main():
     parser.add_argument(
         "--on-conflict",
         choices=['skip', 'overwrite', 'rename'],
-        default='rename',
+        default='skip',
         help="当输出文件已存在时的处理策略:\n"
              "  skip:      跳过已存在的文件，不进行处理。\n"
              "  overwrite: 覆盖已存在的文件。\n"
@@ -160,7 +166,15 @@ def main():
 
             # 2. 计算安全输出路径
             base_name_no_ext = os.path.splitext(filename)[0]
-            output_filename = f"{platform}_output_{base_name_no_ext}.xlsx"
+            
+            # 根据平台标识符构建不同的输出文件名
+            if platform == "TM_RECENT":
+                output_filename = f"TM_output_recent_{base_name_no_ext}.xlsx"
+            elif platform == "TM_HISTORY":
+                output_filename = f"TM_output_history_{base_name_no_ext}.xlsx"
+            else:
+                output_filename = f"{platform}_output_{base_name_no_ext}.xlsx"
+
             output_path = get_safe_output_path(args.output_dir, output_filename, args.on_conflict)
             
             if output_path is None:
@@ -178,7 +192,15 @@ def main():
 
             # 4. 调用对应的平台处理函数
             print("  -> 正在处理数据...", flush=True)
-            processor_func = PROCESSOR_MAP.get(platform)
+            # 从具体标识符（如 'TM_RECENT'）中提取基础平台名（'TM'）用于查找处理器
+            base_platform = platform.split('_')[0]
+            processor_func = PROCESSOR_MAP.get(base_platform)
+            
+            if not processor_func:
+                print(f"  -> 错误：未找到平台 '{base_platform}' 对应的处理器，跳过此文件。\n", flush=True)
+                unidentified_files += 1
+                continue
+                
             try:
                 result_workbook = processor_func(df_raw)
             except Exception as e:

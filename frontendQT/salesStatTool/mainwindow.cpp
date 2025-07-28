@@ -30,7 +30,7 @@ void MainWindow::loadSettings()
     ui->outputPathLineEdit->setText(outputPath);
 
     // 读取冲突处理选项的索引，如果不存在，则返回0作为默认值
-    int conflictIndex = settings.value("options/conflictIndex", 0).toInt();
+    int conflictIndex = settings.value("options/conflictIndex", 2).toInt();
     ui->conflictComboBox->setCurrentIndex(conflictIndex);
 }
 
@@ -88,7 +88,7 @@ void MainWindow::on_processButton_clicked()
         case 0: conflictPolicy = "rename"; break;
         case 1: conflictPolicy = "overwrite"; break;
         case 2: conflictPolicy = "skip"; break;
-        default: conflictPolicy = "rename";
+        default: conflictPolicy = "skip";
     }
 
     // 3. 禁用按钮、清空log、显示状态

@@ -41,6 +41,11 @@ def _prepare_and_validate_data(df):
     ]
     for col in critical_cols:
         if col not in df.columns:
+            # 针对历史数据可能缺少'买家实付金额'列的情况，进行兼容
+            if col == TMALL_COL_ACTUAL_PAYMENT and '买家应付货款' in df.columns:
+                 print(f"警告: 列 '{col}' 未找到，使用 '买家应付货款' 作为替代。")
+                 df.rename(columns={'买家应付货款': TMALL_COL_ACTUAL_PAYMENT}, inplace=True)
+                 continue
             print(f"错误: 核心逻辑所需列 '{col}' 在文件中未找到。脚本无法继续。")
             return None
 
@@ -87,18 +92,21 @@ def _aggregate_product_data(df_processed):
         }
     return product_data_map, successful_trades_total
 
-def _create_summary_sheet(wb, product_data_map, successful_trades_total):
+def _create_summary_sheet(wb, product_data_map, successful_trades_total, is_history_data):
     """在工作簿中创建并填充销售总结页，确保数字格式正确。"""
     ws = wb.active
     ws.title = "销售总结"
     bold_font = Font(bold=True)
     center_align = Alignment(horizontal='center', vertical='center')
     current_row = 1
+    
+    # 根据数据源类型，动态决定第一列的标题
+    header_col_name = "商品规格" if is_history_data else "商品编号"
 
     # --- 收入汇总 ---
     ws.cell(row=current_row, column=1, value="各商品收入汇总 (所有订单)").font = bold_font
     current_row += 1
-    ws.append(["商品编号", "商品名称", "总销售数量", "总销售额(收入)"])
+    ws.append([header_col_name, "商品名称", "总销售数量", "总销售额(收入)"])
     for cell in ws[current_row]: cell.font = bold_font; cell.alignment = center_align
     current_row += 1
     
@@ -122,7 +130,7 @@ def _create_summary_sheet(wb, product_data_map, successful_trades_total):
     # --- 支出汇总 ---
     ws.cell(row=current_row, column=1, value="各商品支出汇总 (非交易成功订单)").font = bold_font
     current_row += 1
-    ws.append(["商品编号", "商品名称", "未成功订单商品数量", "总退款额(支出)"])
+    ws.append([header_col_name, "商品名称", "未成功订单商品数量", "总退款额(支出)"])
     for cell in ws[current_row]: cell.font = bold_font; cell.alignment = center_align
     current_row += 1
 
@@ -159,10 +167,16 @@ def _create_summary_sheet(wb, product_data_map, successful_trades_total):
     for col_letter, width in [('A', 35), ('B', 60), ('C', 20), ('D', 20)]:
         ws.column_dimensions[col_letter].width = width
 
-def _create_detail_sheets(wb, product_data_map):
+def _create_detail_sheets(wb, product_data_map, is_history_data):
     """为每个商品创建并填充详情页，确保数字格式正确。"""
     bold_font = Font(bold=True)
     center_align = Alignment(horizontal='center', vertical='center')
+
+    # 根据数据源类型，动态决定详情页的表头
+    detail_headers = DETAIL_SHEET_COLUMNS_TMALL.copy()
+    if is_history_data:
+        # '商品编号' 在列表中的索引是 4
+        detail_headers[4] = "商品规格"
 
     def format_for_detail(df, amount_col, is_negative=False):
         if df.empty: return pd.DataFrame(columns=DETAIL_SHEET_COLUMNS_TMALL)
@@ -183,6 +197,7 @@ def _create_detail_sheets(wb, product_data_map):
         detail['发货时间'] = df.get(TMALL_COL_SHIPPING_TIME)
         detail['物流单号'] = df.get(TMALL_COL_LOGISTICS_NO)
         detail['物流公司'] = df.get(TMALL_COL_LOGISTICS_COMPANY)
+        # 注意：这里仍然使用原始的列常量列表进行列排序，以确保数据对齐
         return detail.reindex(columns=DETAIL_SHEET_COLUMNS_TMALL).fillna('')
 
     for prod_id in sorted(product_data_map.keys()):
@@ -193,7 +208,8 @@ def _create_detail_sheets(wb, product_data_map):
         try: ws = wb.create_sheet(sheet_name)
         except: ws = wb.create_sheet(f"{prod_id}_detail")
 
-        ws.append(DETAIL_SHEET_COLUMNS_TMALL)
+        # 使用动态生成的表头写入详情页
+        ws.append(detail_headers)
         for cell in ws[1]: cell.font = bold_font; cell.alignment = center_align
         
         income_detail_df = format_for_detail(item['detail_income_df'], TMALL_COL_ACTUAL_PAYMENT)
@@ -216,7 +232,7 @@ def _create_detail_sheets(wb, product_data_map):
             ws.cell(row=row_idx, column=9).number_format = '#,##0'
             ws.cell(row=row_idx, column=10).number_format = '#,##0.00'
 
-        for i, col_title in enumerate(DETAIL_SHEET_COLUMNS_TMALL, 1):
+        for i, col_title in enumerate(detail_headers, 1):
             max_len = max((len(str(c.value)) for c in ws[get_column_letter(i)] if c.value is not None), default=0)
             adjusted_width = min(max(max_len + 5, len(col_title) + 5, 12), 60)
             if col_title == "商品名称": adjusted_width = 70
@@ -230,15 +246,33 @@ def process_tmall_data(df_raw):
     if df_raw is None or df_raw.empty:
         print("天猫处理错误：输入的DataFrame为空。")
         return None
+    
+    # --- 数据规范化 ---
+    # 检查并统一不同版本天猫文件的列名，使其与内部常量对齐
+    df_normalized = df_raw.copy()
+    is_history_data = False  # 初始化数据源类型标志
+    
+    # 历史数据CSV文件使用'商家编码'作为商品ID，且部分列名不同
+    if '商家编码' in df_normalized.columns and TMALL_COL_PRODUCT_ID not in df_normalized.columns:
+        print("  -> 检测到天猫历史数据格式(CSV)，正在进行列名适配...")
+        df_normalized.rename(columns={
+            '商家编码': TMALL_COL_PRODUCT_ID,
+            '标题': TMALL_COL_PRODUCT_NAME,
+            '价格': TMALL_COL_UNIT_PRICE,
+            '买家实际支付金额': TMALL_COL_ACTUAL_PAYMENT,
+        }, inplace=True)
+        is_history_data = True # 设置标志为True
         
-    df_processed = _prepare_and_validate_data(df_raw.copy())
+    # 后续处理流程使用规范化后的DataFrame
+    df_processed = _prepare_and_validate_data(df_normalized)
     if df_processed is None: return None
         
     product_data_map, successful_trades_total = _aggregate_product_data(df_processed)
     
     wb = Workbook()
-    _create_summary_sheet(wb, product_data_map, successful_trades_total)
-    _create_detail_sheets(wb, product_data_map)
+    # 将数据源类型标志传递给Excel生成函数
+    _create_summary_sheet(wb, product_data_map, successful_trades_total, is_history_data)
+    _create_detail_sheets(wb, product_data_map, is_history_data)
     
     if "销售总结" in wb.sheetnames and wb.sheetnames[0] != "销售总结":
         wb.move_sheet("销售总结", -len(wb.sheetnames) + 1)
@@ -258,12 +292,17 @@ if __name__ == "__main__":
     else:
         print(f"--- 独立测试: 读取文件 {TEST_FILENAME} ---")
         try:
-            df_test_raw = pd.read_excel(input_file, dtype=str, engine='openpyxl')
-            df_test_raw.columns = df_test_raw.columns.str.strip()
+            # 模拟主程序读取文件，适配xlsx和csv
+            if TEST_FILENAME.lower().endswith('.csv'):
+                df_test_raw = pd.read_csv(input_file, dtype=str, keep_default_na=False, encoding='utf-8-sig')
+            else:
+                df_test_raw = pd.read_excel(input_file, dtype=str, engine='openpyxl', keep_default_na=False)
+
+            df_test_raw.columns = [col.strip().replace('"', '') for col in df_test_raw.columns]
             for col in df_test_raw.columns:
                 if df_test_raw[col].dtype == 'object':
-                    df_test_raw[col] = df_test_raw[col].str.strip().replace(
-                        ['--', '', 'None', 'nan', '#NULL!', None], np.nan, regex=False
+                    df_test_raw[col] = df_test_raw[col].astype(str).str.strip().replace(
+                        ['-', '--', '', 'None', 'nan', '#NULL!', 'null', '\t'], np.nan, regex=False
                     )
         except Exception as e:
             print(f"测试中读取文件失败: {e}")

@@ -5,13 +5,21 @@ import os
 # 定义每个平台独有的、稳定存在的列名集合作为“指纹”
 
 PLATFORM_FINGERPRINTS = {
-    "TM": {  # 天猫/淘宝
+    "TM_RECENT": {  # 天猫/淘宝 (三个月内 .xlsx)
         '子订单编号',
         '主订单编号',
         '商品标题',
         '买家实付金额',
         '退款金额',
         '商品ID'
+    },
+    "TM_HISTORY": { # 天猫/淘宝 (历史数据 .csv)
+        '主订单编号',
+        '子订单编号',
+        '标题',
+        '商家编码',
+        '退款金额',
+        '订单状态'
     },
     "JD": {  # 京东
         '订单编号',
@@ -49,7 +57,7 @@ def identify_platform(file_path):
         file_path (str): 需要识别的文件的完整路径 (.csv, .xls, .xlsx)。
 
     Returns:
-        str: 代表平台的字符串 (e.g., "TM", "JD", "PDD", "DY")。
+        str: 代表平台的字符串 (e.g., "TM_RECENT", "JD", "TM_HISTORY")。
              如果无法识别或文件有问题，则返回 None。
     """
     if not os.path.exists(file_path):
@@ -60,9 +68,16 @@ def identify_platform(file_path):
         # 根据文件扩展名选择合适的读取方式，只读取表头 (nrows=0)
         file_ext = os.path.splitext(file_path)[1].lower()
         
+        df_header = None
         if file_ext == '.csv':
-            # 尝试用 utf-8-sig 读取，它能处理带BOM的CSV
-            df_header = pd.read_csv(file_path, nrows=0, encoding='utf-8-sig', keep_default_na=False)
+            try:
+                # 优先尝试用 utf-8-sig 读取，它能处理带BOM的CSV
+                df_header = pd.read_csv(file_path, nrows=0, encoding='utf-8-sig', keep_default_na=False)
+            except UnicodeDecodeError:
+                # 如果UTF-8解码失败，则回退到GBK编码再次尝试
+                print(f"  -> UTF-8解码失败，尝试使用GBK编码读取表头...")
+                df_header = pd.read_csv(file_path, nrows=0, encoding='gbk', keep_default_na=False)
+
         elif file_ext in ['.xlsx', '.xls']:
             df_header = pd.read_excel(file_path, nrows=0, engine='openpyxl')
         else:
