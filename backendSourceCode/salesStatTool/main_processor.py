@@ -4,6 +4,13 @@ import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import io
+import traceback
+
+#解决前后端通信时的编码问题。
+sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='surrogateescape')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='surrogateescape')
 
 # 动态添加脚本所在目录到Python路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -16,52 +23,66 @@ try:
     import PDDProcess
     import DYProcess
 except ImportError as e:
-    print(f"错误：无法导入必要的处理模块。请确保所有处理脚本 "
-          f"(identifier.py, TMProcess.py, etc.) 与 main_processor.py 在同一目录下。", flush=True)
-    print(f"具体错误: {e}", flush=True)
+    print(f"错误：无法导入必要的处理模块。", file=sys.stderr, flush=True)
+    print(f"具体错误: {e}", file=sys.stderr, flush=True)
     sys.exit(1)
 
-# --- 平台与处理函数的映射 ---
+# 平台处理工具映射表。
+# 这里的键必须与 identifier.py 中 PLATFORM_FINGERPRINTS 的键完全对应。
+# 由于 TMProcess.py 内部已能够区分"TM_RECENT"、"TM_HISTORY"这两种格式，所以它们可以指向同一个处理函数。
 PROCESSOR_MAP = {
-    "TM": TMProcess.process_tmall_data,
-    "JD": JDProcess.process_jingdong_data,
-    "PDD": PDDProcess.process_pdd_data,
-    "DY": DYProcess.process_douyin_data,
+    "TM_RECENT": TMProcess.process_tmall_data,  # 天猫近期订单 (.xlsx)
+    "TM_HISTORY": TMProcess.process_tmall_data, # 天猫历史订单 (.csv)
+    "JD": JDProcess.process_jingdong_data,      # 京东
+    "PDD": PDDProcess.process_pdd_data,         # 拼多多
+    "DY": DYProcess.process_douyin_data,        # 抖店
 }
 
-def get_safe_output_path(output_dir, base_filename, on_conflict_policy):
+# --- 协议与通信函数 ---
+def send_status_update(file_path, status, message=""):
+    """
+    向标准输出发送格式化的状态更新信息，供前端GUI解析。
+    """
+    # 打印格式化的字符串，并立即刷新缓冲区，确保前端能实时收到。
+    print(f"##STATUS##|{file_path}|{status}|{message}", flush=True)
+
+# --- 文件处理辅助函数 ---
+def get_safe_output_path(output_dir, input_filename, platform, on_conflict_policy):
     """
     根据文件冲突策略，计算一个安全的输出文件路径。
-    
-    Args:
-        output_dir (str): 输出目录。
-        base_filename (str): 基础输出文件名。
-        on_conflict_policy (str): 'skip', 'overwrite', or 'rename'.
-
-    Returns:
-        str or None: 如果可以写入，则返回完整的输出路径；如果策略为'skip'且文件存在，则返回None。
     """
-    output_path = os.path.join(output_dir, base_filename)
+    # 从输入文件名中分离出基础名和扩展名
+    base_name_no_ext = os.path.splitext(input_filename)[0]
+    
+    # 根据平台标识符构建不同的输出文件名，以区分结果
+    if platform == "TM_RECENT":
+        output_filename = f"TM_recent_output_{base_name_no_ext}.xlsx"
+    elif platform == "TM_HISTORY":
+        output_filename = f"TM_history_output_{base_name_no_ext}.xlsx"
+    else:
+        output_filename = f"{platform}_output_{base_name_no_ext}.xlsx"
+        
+    # 组合成完整路径
+    output_path = os.path.join(output_dir, output_filename)
     
     if not os.path.exists(output_path):
         return output_path
 
+    # 根据冲突策略进行处理
     if on_conflict_policy == 'skip':
-        print(f"  -> 文件 '{base_filename}' 已存在，策略【跳过】。", flush=True)
-        return None
+        return None # 返回None表示跳过
         
     if on_conflict_policy == 'overwrite':
-        print(f"  -> 文件 '{base_filename}' 已存在，策略【覆盖】。", flush=True)
-        return output_path
+        return output_path # 直接返回原路径，后续操作会覆盖
 
     if on_conflict_policy == 'rename':
-        name, ext = os.path.splitext(base_filename)
+        # 循环尝试在文件名后添加序号 (1), (2), ... 直到找到一个不冲突的名称
+        name, ext = os.path.splitext(output_filename)
         counter = 1
         while True:
             new_filename = f"{name} ({counter}){ext}"
             new_path = os.path.join(output_dir, new_filename)
             if not os.path.exists(new_path):
-                print(f"  -> 文件 '{base_filename}' 已存在，策略【重命名】，另存为 '{new_filename}'。", flush=True)
                 return new_path
             counter += 1
     
@@ -70,171 +91,155 @@ def get_safe_output_path(output_dir, base_filename, on_conflict_policy):
 def read_dataframe_from_file(file_path):
     """
     根据文件扩展名，从文件读取数据到Pandas DataFrame，并进行基础清洗。
-    
-    Args:
-        file_path (str): 输入文件的完整路径。
-
-    Returns:
-        pd.DataFrame or None: 成功则返回DataFrame，失败返回None。
     """
     file_ext = os.path.splitext(file_path)[1].lower()
     df = None
     try:
+        # 根据扩展名选择不同的读取方式
         if file_ext == '.csv':
             try:
-                # 优先尝试用 utf-8-sig 读取
+                # 优先尝试utf-8-sig
                 df = pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding='utf-8-sig')
             except UnicodeDecodeError:
-                # 如果UTF-8解码失败，则回退到GBK编码再次尝试
-                print(f"  -> UTF-8解码失败，尝试使用GBK编码读取完整文件...")
+                # 如果失败，回退到GBK编码
+                print(f"  -> {os.path.basename(file_path)}: UTF-8解码失败，尝试GBK编码...", flush=True)
                 df = pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding='gbk')
         elif file_ext in ['.xlsx', '.xls']:
             df = pd.read_excel(file_path, dtype=str, engine='openpyxl', keep_default_na=False)
         
         if df is not None:
-            # 统一进行基础清洗
+            # 对读取到的数据进行统一的基础清洗
             df.columns = [col.strip().replace('"', '') for col in df.columns]
             for col in df.columns:
                 if df[col].dtype == 'object':
-                    # 使用replace将常见空值字符串替换为np.nan，以便后续处理
                     df[col] = df[col].astype(str).str.strip().replace(
                         ['-', '--', '', 'None', 'nan', '#NULL!', 'null', '\t'], np.nan, regex=False
                     )
             return df
 
     except Exception as e:
-        print(f"  -> 错误：读取文件时发生错误: {e}", flush=True)
+        print(f"  -> 错误：读取文件 '{os.path.basename(file_path)}' 时发生错误: {e}", flush=True)
         return None
 
     return df
 
+# --- 主逻辑函数 ---
 def main():
     """
     主执行函数，负责整个处理流程。
     """
-    parser = argparse.ArgumentParser(
-        description="电商平台销售数据处理工具。",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
-    parser.add_argument("input_dir", help="包含原始数据文件 (.csv, .xlsx) 的输入目录。")
-    parser.add_argument("output_dir", help="用于存放处理后Excel文件的输出目录。")
-    parser.add_argument(
-        "--on-conflict",
-        choices=['skip', 'overwrite', 'rename'],
-        default='skip',
-        help="当输出文件已存在时的处理策略:\n"
-             "  skip:      跳过已存在的文件，不进行处理。\n"
-             "  overwrite: 覆盖已存在的文件。\n"
-             "  rename:    在文件名后添加序号 (file (1).xlsx) (默认)。"
-    )
+    # 1. 解析命令行参数
+    parser = argparse.ArgumentParser(description="电商平台销售数据处理后端引擎。")
+    parser.add_argument("--output-dir", help="输出目录。如果未提供，则输出到源文件所在目录。")
+    parser.add_argument("--on-conflict", choices=['skip', 'overwrite', 'rename'], default='rename', help="文件冲突处理策略。")
     args = parser.parse_args()
 
-    # --- 准备工作 ---
+    # 2. 打印启动信息
     start_time = datetime.now()
     print("-" * 60, flush=True)
-    print(f"处理开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-    print(f"输入目录: {os.path.abspath(args.input_dir)}", flush=True)
-    print(f"输出目录: {os.path.abspath(args.output_dir)}", flush=True)
+    print(f"后端引擎启动: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    output_mode = f"指定目录: {os.path.abspath(args.output_dir)}" if args.output_dir else "源文件目录模式"
+    print(f"输出模式: {output_mode}", flush=True)
     print(f"文件冲突策略: {args.on_conflict.upper()}", flush=True)
+    print("等待从前端接收任务列表...", flush=True)
     print("-" * 60, flush=True)
 
-    if not os.path.isdir(args.input_dir):
-        print(f"错误：输入目录不存在 -> '{args.input_dir}'", flush=True)
-        sys.exit(1)
+    # 初始化一个字典，用于统计各种处理结果的数量。
+    # 键是状态码（与send_status_update中使用的保持一致），值是计数。
+    status_counts = {
+        "SUCCESS": 0,
+        "SKIPPED": 0,
+        "UNIDENTIFIED": 0,
+        "FAILURE": 0,
+    }
+
+    # 3. 核心处理循环：从标准输入逐行读取文件路径
+    for file_path in map(str.strip, sys.stdin):
+        if not file_path:
+            continue # 跳过空行
+
+        print(f"\n开始处理任务: '{os.path.basename(file_path)}'", flush=True)
+        send_status_update(file_path, "PROCESSING", "开始处理...")
+
+        # 3.1 识别平台
+        platform = identifier.identify_platform(file_path)
+        if not platform:
+            print("  -> 平台识别失败，跳过此文件。", flush=True)
+            send_status_update(file_path, "UNIDENTIFIED", "未能识别平台类型")
+            status_counts["UNIDENTIFIED"] += 1
+            continue
+        print(f"  -> 识别为【{platform}】平台。", flush=True)
+
+        # 3.2 计算输出路径
+        output_dir = args.output_dir if args.output_dir else os.path.dirname(file_path)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = get_safe_output_path(output_dir, os.path.basename(file_path), platform, args.on_conflict)
         
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    processed_files = 0
-    skipped_files = 0
-    failed_files = 0
-    unidentified_files = 0
-    
-    # --- 核心处理循环 ---
-    for filename in sorted(os.listdir(args.input_dir)):
-        if filename.lower().endswith(('.csv', '.xlsx', '.xls')):
-            input_path = os.path.join(args.input_dir, filename)
-            
-            print(f"发现文件: '{filename}'", flush=True)
-            
-            # 1. 识别平台
-            platform = identifier.identify_platform(input_path)
-            if not platform:
-                print("  -> 平台识别失败，跳过此文件。\n", flush=True)
-                unidentified_files += 1
-                continue
-            print(f"  -> 识别为【{platform}】平台。", flush=True)
+        if output_path is None:
+            skipped_name = os.path.basename(get_safe_output_path(output_dir, os.path.basename(file_path), platform, 'rename')).replace(' (1)', '')
+            print("  -> 输出文件已存在，根据策略跳过。", flush=True)
+            send_status_update(file_path, "SKIPPED", f"文件 '{skipped_name}' 已存在")
+            status_counts["SKIPPED"] += 1
+            continue
 
-            # 2. 计算安全输出路径
-            base_name_no_ext = os.path.splitext(filename)[0]
-            
-            # 根据平台标识符构建不同的输出文件名
-            if platform == "TM_RECENT":
-                output_filename = f"TM_output_recent_{base_name_no_ext}.xlsx"
-            elif platform == "TM_HISTORY":
-                output_filename = f"TM_output_history_{base_name_no_ext}.xlsx"
-            else:
-                output_filename = f"{platform}_output_{base_name_no_ext}.xlsx"
+        # 3.3 读取数据
+        df_raw = read_dataframe_from_file(file_path)
+        if df_raw is None:
+            send_status_update(file_path, "FAILURE", "读取文件时发生错误")
+            status_counts["FAILURE"] += 1
+            continue
 
-            output_path = get_safe_output_path(args.output_dir, output_filename, args.on_conflict)
+        # 3.4 调用处理工具
+        print("  -> 正在调用处理工具...", flush=True)
+        
+        # 使用从 identifier 返回的平台标识符 (如 "TM_RECENT") 作为键来查找处理工具。
+        processor_func = PROCESSOR_MAP.get(platform)
+        
+        if not processor_func:
+            print(f"  -> 错误：未找到平台 '{platform}' 对应的处理工具，跳过。", flush=True)
+            send_status_update(file_path, "UNIDENTIFIED", f"未找到平台'{platform}'的处理工具")
+            status_counts["UNIDENTIFIED"] += 1
+            continue
             
-            if output_path is None:
-                skipped_files += 1
-                print("", flush=True) 
-                continue
+        result_workbook = None
+        try:
+            result_workbook = processor_func(df_raw)
+        except Exception as e:
+            print(f"  -> 错误: 在处理【{platform}】数据时发生异常: {e}", flush=True)
+            exc_str = traceback.format_exc()
+            print(exc_str, flush=True)
+            send_status_update(file_path, "FAILURE", f"处理时发生异常: {e}")
+            status_counts["FAILURE"] += 1
+            continue
 
-            # 3. 读取数据为DataFrame
-            print("  -> 正在读取数据...", flush=True)
-            df_raw = read_dataframe_from_file(input_path)
-            if df_raw is None:
-                print("  -> 读取失败，跳过此文件。\n", flush=True)
-                failed_files += 1
-                continue
-
-            # 4. 调用对应的平台处理函数
-            print("  -> 正在处理数据...", flush=True)
-            # 从具体标识符（如 'TM_RECENT'）中提取基础平台名（'TM'）用于查找处理器
-            base_platform = platform.split('_')[0]
-            processor_func = PROCESSOR_MAP.get(base_platform)
-            
-            if not processor_func:
-                print(f"  -> 错误：未找到平台 '{base_platform}' 对应的处理器，跳过此文件。\n", flush=True)
-                unidentified_files += 1
-                continue
-                
+        # 3.5 保存结果
+        if result_workbook:
+            print(f"  -> 正在保存到: '{os.path.basename(output_path)}'", flush=True)
             try:
-                result_workbook = processor_func(df_raw)
+                result_workbook.save(output_path)
+                print("  -> 保存成功！", flush=True)
+                send_status_update(file_path, "SUCCESS", f"已保存到: {output_path}")
+                status_counts["SUCCESS"] += 1
             except Exception as e:
-                print(f"  -> 错误: 在处理【{platform}】数据时发生异常: {e}", flush=True)
-                import traceback
-                # 异常堆栈信息也需要flush
-                traceback.print_exc(file=sys.stdout)
-                sys.stdout.flush()
-                result_workbook = None
+                print(f"  -> 错误：保存文件失败: {e}", flush=True)
+                send_status_update(file_path, "FAILURE", f"保存文件时发生错误: {e}")
+                status_counts["FAILURE"] += 1
+        else:
+            print("  -> 数据处理失败，未生成结果文件。", flush=True)
+            send_status_update(file_path, "FAILURE", "处理工具未返回有效结果")
+            status_counts["FAILURE"] += 1
 
-            # 5. 保存结果
-            if result_workbook:
-                print(f"  -> 正在保存到: '{os.path.basename(output_path)}'", flush=True)
-                try:
-                    result_workbook.save(output_path)
-                    print("  -> 保存成功！\n", flush=True)
-                    processed_files += 1
-                except Exception as e:
-                    print(f"  -> 错误：保存文件失败: {e}\n", flush=True)
-                    failed_files += 1
-            else:
-                print("  -> 数据处理失败，未生成结果文件。\n", flush=True)
-                failed_files += 1
-    
-    # --- 结束总结 ---
+    # 4. 结束总结
     end_time = datetime.now()
     duration = end_time - start_time
-    print("-" * 60, flush=True)
-    print("所有文件处理完毕！", flush=True)
+    print("\n" + "-" * 60, flush=True)
+    print("所有任务处理完毕！", flush=True)
     print(f"处理总耗时: {duration}", flush=True)
-    print(f"成功处理: {processed_files}个文件", flush=True)
-    print(f"跳过处理 (同名文件): {skipped_files}个文件", flush=True)
-    print(f"平台未识别: {unidentified_files}个文件", flush=True)
-    print(f"处理失败 (错误): {failed_files}个文件", flush=True)
+    print("处理结果统计:", flush=True)
+    print(f"  - 成功: {status_counts['SUCCESS']} 个文件", flush=True)
+    print(f"  - 跳过 (文件已存在): {status_counts['SKIPPED']} 个文件", flush=True)
+    print(f"  - 平台未识别: {status_counts['UNIDENTIFIED']} 个文件", flush=True)
+    print(f"  - 失败 (发生错误): {status_counts['FAILURE']} 个文件", flush=True)
     print("-" * 60, flush=True)
 
 if __name__ == "__main__":

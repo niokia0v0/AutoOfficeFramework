@@ -59,5 +59,4 @@ Makefile*
 
 # Personal notes etc
 *.txt 
-
-/backendSourceCode/salesStatTool/upx.exe
+*.7z

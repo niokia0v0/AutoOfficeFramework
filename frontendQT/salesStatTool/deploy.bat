@@ -1,20 +1,27 @@
 @echo off
+setlocal
 
-echo --- [1/4] Cleaning up previous deployment...
-if exist "%~dp0..\..\Releases\salesStatTool\salesStatTool.exe" (
-    del /Q "%~dp0..\..\Releases\salesStatTool\*.*"
+:: 接收来自 .pro 文件的参数
+:: %1: 部署目录 (DESTDIR, e.g., "F:\projects\AutoOfficeFramework\Releases\salesStatTool")
+:: %2: 目标程序名 (TARGET, e.g., "salesStatTool")
+:: %3: Qt的bin目录 (e.g., "C:\Qt\5.14.2\mingw73_64\bin")
+
+set DEPLOY_DIR=%~1
+set TARGET_NAME=%~2
+set QT_BIN_PATH=%~3
+
+echo --- [1/2] Entering deployment directory...
+echo      %DEPLOY_DIR%
+cd /d "%DEPLOY_DIR%"
+
+if not exist "%TARGET_NAME%.exe" (
+    echo ERROR: Target executable '%TARGET_NAME%.exe' not found in deployment directory!
+    exit /b 1
 )
-for %%d in (platforms styles iconengines imageformats translations) do (
-    if exist "%~dp0..\..\Releases\salesStatTool\%%d" (
-        rmdir /S /Q "%~dp0..\..\Releases\salesStatTool\%%d"
-    )
-)
 
-echo --- [2/4] Copying frontend executable...
-copy /Y "%~1\%~2.exe" "%~dp0..\..\Releases\salesStatTool"
+echo --- [2/2] Deploying Qt libraries using windeployqt...
+call "%QT_BIN_PATH%\windeployqt.exe" "%TARGET_NAME%.exe"
 
-echo --- [3/4] Deploying Qt libraries...
-cd /d "%~dp0..\..\Releases\salesStatTool"
-call "%~3\windeployqt.exe" %2.exe
+echo --- Deployment finished successfully! ---
 
-echo --- [4/4] Deployment finished successfully!
+endlocal
