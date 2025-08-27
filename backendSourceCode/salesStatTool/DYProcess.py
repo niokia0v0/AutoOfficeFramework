@@ -11,7 +11,7 @@ import numpy as np
 # Pandas 显示选项
 pd.set_option('future.no_silent_downcasting', True)
 
-# 抖店原始列名映射
+# 抖店原始列名常量定义
 DY_COL_MAIN_ORDER_ID = '主订单编号'
 DY_COL_PRODUCT_NAME_DESC = '选购商品'
 DY_COL_PRODUCT_ID = '商品ID'
@@ -51,8 +51,9 @@ def _prepare_and_validate_data(df):
     """
     # 验证关键列是否存在
     critical_cols = {
-        DY_COL_PRODUCT_ID: "商品ID", DY_COL_ORDER_STATUS: "订单状态",
-        DY_COL_QUANTITY: "商品数量", DY_COL_UNIT_PRICE: "商品金额"
+        DY_COL_PRODUCT_ID: "商品ID", DY_COL_PRODUCT_NAME_DESC: "选购商品",
+        DY_COL_ORDER_STATUS: "订单状态", DY_COL_QUANTITY: "商品数量", 
+        DY_COL_UNIT_PRICE: "商品金额"
     }
     for col_const, col_display in critical_cols.items():
         if col_const not in df.columns:
@@ -64,22 +65,28 @@ def _prepare_and_validate_data(df):
     for col, fill_value in numeric_cols.items():
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(fill_value)
 
-    # 创建计算列
+    # 创建应付款计算列 (单价 * 数量)
     df[CALC_COL_PAYABLE] = df[DY_COL_UNIT_PRICE] * df[DY_COL_QUANTITY]
 
-    # 筛选出有商品ID的有效行
-    df[DY_COL_PRODUCT_ID] = df[DY_COL_PRODUCT_ID].astype(str).replace('nan', np.nan)
-    df_processed = df[df[DY_COL_PRODUCT_ID].notna()].copy()
+    # 清洗作为分组键的“选购商品”列
+    df[DY_COL_PRODUCT_NAME_DESC] = df[DY_COL_PRODUCT_NAME_DESC].str.strip()
+    df[DY_COL_PRODUCT_NAME_DESC] = df[DY_COL_PRODUCT_NAME_DESC].fillna("未知商品标题")
+    
+    # 确保商品ID为字符串类型，以便后续提取
+    df[DY_COL_PRODUCT_ID] = df[DY_COL_PRODUCT_ID].astype(str).replace('nan', '')
+
+    # 筛选出包含有效商品标题的行
+    df_processed = df[df[DY_COL_PRODUCT_NAME_DESC].notna()].copy()
     
     if df_processed.empty:
-        print(f"数据中没有找到包含有效商品ID('{DY_COL_PRODUCT_ID}')的行。无法生成报告。")
+        print(f"数据中没有找到包含有效商品标题('{DY_COL_PRODUCT_NAME_DESC}')的行。无法生成报告。")
         return None
         
     return df_processed
 
 def _aggregate_product_data(df_processed):
     """
-    按商品ID聚合数据，计算各商品的收入、支出和明细。
+    按'选购商品'（商品标题）聚合数据，计算各商品的收入、支出和明细。
     
     Args:
         df_processed (pd.DataFrame): 准备好的数据。
@@ -88,14 +95,19 @@ def _aggregate_product_data(df_processed):
         dict: 一个包含所有商品聚合信息的字典 (product_data_map)。
     """
     product_data_map = {}
-    for product_id, group_df in df_processed.groupby(DY_COL_PRODUCT_ID):
-        product_name = group_df[DY_COL_PRODUCT_NAME_DESC].dropna().iloc[0] if not group_df[DY_COL_PRODUCT_NAME_DESC].dropna().empty else "未知商品"
+    # 使用'选购商品'列作为分组键
+    for product_name, group_df in df_processed.groupby(DY_COL_PRODUCT_NAME_DESC):
+        # 从分组数据中提取代表性的商品ID
+        product_id = group_df[DY_COL_PRODUCT_ID].dropna().iloc[0] if not group_df[DY_COL_PRODUCT_ID].dropna().empty else "未知编号"
 
+        # 收入数据为所有订单
         income_df = group_df.copy()
+        # 支出数据为所有非“已完成”状态的订单
         expenditure_df = group_df[group_df[DY_COL_ORDER_STATUS] != STATUS_COMPLETED].copy()
         
-        product_data_map[product_id] = {
-            'name': product_name,
+        # 将聚合信息存入字典，键为商品名称
+        product_data_map[product_name] = {
+            'prod_id': product_id,
             'income_qty': income_df[DY_COL_QUANTITY].sum(),
             'income_amount': income_df[CALC_COL_PAYABLE].sum(),
             'expenditure_qty': expenditure_df[DY_COL_QUANTITY].sum(),
@@ -117,17 +129,18 @@ def _create_summary_sheet(wb, product_data_map):
     # --- 收入汇总 ---
     ws.cell(row=current_row, column=1, value="各商品收入汇总 (全部订单)").font = bold_font
     current_row += 1
+    # 更新表头以同时展示商品编号和名称
     income_headers = ["商品编号", "商品名称", "总销售数量", "总应付金额"]
     ws.append(income_headers)
     for cell in ws[current_row]: cell.font = bold_font; cell.alignment = center_align
     current_row += 1
 
     grand_total_income_qty, grand_total_income_amt = 0, 0.0
-    sorted_product_ids = sorted(product_data_map.keys())
+    sorted_product_names = sorted(product_data_map.keys())
     
-    for prod_id in sorted_product_ids:
-        item = product_data_map[prod_id]
-        ws.append([prod_id, item['name'], item['income_qty'], item['income_amount']])
+    for name in sorted_product_names:
+        item = product_data_map[name]
+        ws.append([item['prod_id'], name, item['income_qty'], item['income_amount']])
         grand_total_income_qty += item['income_qty']
         grand_total_income_amt += item['income_amount']
         current_row += 1
@@ -145,10 +158,10 @@ def _create_summary_sheet(wb, product_data_map):
     current_row += 1
 
     grand_total_exp_qty, grand_total_exp_amt = 0, 0.0
-    for prod_id in sorted_product_ids:
-        item = product_data_map[prod_id]
+    for name in sorted_product_names:
+        item = product_data_map[name]
         if item['expenditure_qty'] > 0 or item['expenditure_amount'] != 0:
-            ws.append([prod_id, item['name'], item['expenditure_qty'], item['expenditure_amount']])
+            ws.append([item['prod_id'], name, item['expenditure_qty'], item['expenditure_amount']])
             grand_total_exp_qty += item['expenditure_qty']
             grand_total_exp_amt += item['expenditure_amount']
             current_row += 1
@@ -201,14 +214,34 @@ def _create_detail_sheets(wb, product_data_map):
     bold_font = Font(bold=True)
     center_align = Alignment(horizontal='center', vertical='center')
 
-    for prod_id in sorted(product_data_map.keys()):
-        item = product_data_map[prod_id]
+    for name in sorted(product_data_map.keys()):
+        item = product_data_map[name]
         
-        sheet_name_raw = f"{prod_id}_{item['name']}"
-        sheet_name = re.sub(r'[\\/\*\[\]\:?]', '_', sheet_name_raw)[:31]
-        try: ws = wb.create_sheet(sheet_name)
-        except: ws = wb.create_sheet(f"{prod_id}_detail")
+        # --- Sheet页命名逻辑 ---
+        # 1. 直接使用商品名称(name)作为基础，并清理Excel不支持的特殊字符
+        base_name = re.sub(r'[\\/\*\[\]\:?]', '_', name)
+        
+        # 2. 如果清理后的名称长度超过31个字符，则从尾部截取
+        if len(base_name) > 31:
+            base_name = base_name[-31:] # 直接保留最后31个字符
 
+        # 3. 防重名处理：如果名称已存在，则添加序号
+        sheet_name = base_name
+        counter = 1
+        while sheet_name in wb.sheetnames:
+            counter += 1
+            suffix = f"({counter})"
+            # 为了给序号腾出空间，需要从已截断的base_name上再次截断
+            truncated_base = base_name[:31 - len(suffix)]
+            sheet_name = f"{truncated_base}{suffix}"
+
+        try:
+            ws = wb.create_sheet(sheet_name)
+        except Exception as e:
+            print(f"警告: 创建Sheet页 '{sheet_name}' 失败: {e}。将使用备用名称。")
+            ws = wb.create_sheet(f"{item['prod_id']}_detail")
+
+        # 内部函数，用于写入一个数据区域（如收入明细）
         def write_section(df, title, total_title, is_expenditure=False):
             if df.empty: return
             
@@ -228,13 +261,15 @@ def _create_detail_sheets(wb, product_data_map):
             for cell in ws[ws.max_row]: cell.font = bold_font
             ws.append([])
 
+        # 写入收入和支出明细
         write_section(item['detail_income_df'], "收入明细 (全部订单)", "收入总计", is_expenditure=False)
         write_section(item['detail_expenditure_df'], "支出明细 (未完成订单)", "支出总计", is_expenditure=True)
 
+        # 设置列宽
         for i, width in enumerate([25, 15, 20, 30, 25, 70, 15, 15, 15, 22, 22, 22], 1):
              ws.column_dimensions[get_column_letter(i)].width = width
 
-# --- 主处理函数 (新架构) ---
+# --- 主处理函数 ---
 
 def process_douyin_data(df_raw):
     """

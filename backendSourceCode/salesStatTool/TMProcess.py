@@ -21,12 +21,14 @@ TMALL_COL_REFUND_AMOUNT = '退款金额'
 TMALL_COL_ORDER_CREATE_TIME = '订单创建时间'
 TMALL_COL_ORDER_PAY_TIME = '订单付款时间'
 TMALL_COL_PRODUCT_ID = '商品ID'
+TMALL_COL_MERCHANT_SKU = '商家编码'
 TMALL_COL_SHIPPING_TIME = '发货时间'
 TMALL_COL_LOGISTICS_NO = '物流单号'
 TMALL_COL_LOGISTICS_COMPANY = '物流公司'
 STATUS_TRADE_SUCCESS = '交易成功'
-DETAIL_SHEET_COLUMNS_TMALL = [
-    '订单编号', '子订单编号', '订单状态', '退款状态', '商品编号', '商品名称',
+# 这是一个“全集”模板，程序会根据实际数据动态移除不包含的列
+DETAIL_SHEET_COLUMNS_TEMPLATE = [
+    '订单编号', '子订单编号', '订单状态', '退款状态', '商品编号', '商家编码', '商品名称',
     '商品属性', '商品价格', '商品数量', '应结金额', '订单创建时间', '订单付款时间',
     '发货时间', '物流单号', '物流公司'
 ]
@@ -36,16 +38,18 @@ DETAIL_SHEET_COLUMNS_TMALL = [
 def _prepare_and_validate_data(df):
     """验证数据，转换数值列，并进行最终的数据准备。"""
     critical_cols = [
-        TMALL_COL_PRODUCT_ID, TMALL_COL_ORDER_STATUS, TMALL_COL_QUANTITY,
+        TMALL_COL_MERCHANT_SKU, TMALL_COL_ORDER_STATUS, TMALL_COL_QUANTITY,
         TMALL_COL_ACTUAL_PAYMENT, TMALL_COL_REFUND_AMOUNT, TMALL_COL_PRODUCT_ATTRIBUTES
     ]
     for col in critical_cols:
         if col not in df.columns:
-            # 针对历史数据可能缺少'买家实付金额'列的情况，进行兼容
+            # 首先，处理有备用方案的特殊情况
             if col == TMALL_COL_ACTUAL_PAYMENT and '买家应付货款' in df.columns:
                  print(f"警告: 列 '{col}' 未找到，使用 '买家应付货款' 作为替代。")
                  df.rename(columns={'买家应付货款': TMALL_COL_ACTUAL_PAYMENT}, inplace=True)
-                 continue
+                 continue # 继续检查下一个关键列
+            
+            # 对于所有其他缺失的关键列（包括'商家编码'），都执行下面的通用错误处理
             print(f"错误: 核心逻辑所需列 '{col}' 在文件中未找到。脚本无法继续。")
             return None
 
@@ -60,39 +64,43 @@ def _prepare_and_validate_data(df):
             print(f"警告: 列 '{col}' 在文件中未找到，将创建并填充默认值0.0。")
             df[col] = 0.0
 
-    df[TMALL_COL_PRODUCT_ID] = df[TMALL_COL_PRODUCT_ID].astype(str).replace('nan', np.nan)
-    df_processed = df[df[TMALL_COL_PRODUCT_ID].notna()].copy()
+    # 将商家编码中的空值替换为 "未编码商品"
+    df[TMALL_COL_MERCHANT_SKU] = df[TMALL_COL_MERCHANT_SKU].fillna("未编码商品")
+    
+    # 基于子订单编号过滤掉非订单数据行
+    df_processed = df[df[TMALL_COL_SUB_ORDER_ID].notna()].copy()
     
     if df_processed.empty:
-        print(f"数据中没有找到包含有效商品ID('{TMALL_COL_PRODUCT_ID}')的行。无法生成报告。")
+        print(f"数据中没有找到包含有效子订单编号('{TMALL_COL_SUB_ORDER_ID}')的行。无法生成报告。")
         return None
         
     return df_processed
 
 def _aggregate_product_data(df_processed):
-    """按商品ID聚合数据，计算各商品的收入、支出和明细。"""
+    """按商家编码聚合数据，计算各商品的收入、支出和明细。"""
     product_data_map = {}
     
     successful_trades_df = df_processed[df_processed[TMALL_COL_ORDER_STATUS] == STATUS_TRADE_SUCCESS]
     successful_trades_total = successful_trades_df[TMALL_COL_ACTUAL_PAYMENT].sum()
 
-    for product_id, group_df in df_processed.groupby(TMALL_COL_PRODUCT_ID):
+    for merchant_sku, group_df in df_processed.groupby(TMALL_COL_MERCHANT_SKU):
+        # 为总结页和Sheet页标题选择一个代表性的商品名称（通常是第一个）
         product_name = group_df[TMALL_COL_PRODUCT_NAME].dropna().iloc[0] if not group_df[TMALL_COL_PRODUCT_NAME].dropna().empty else "未知商品"
         income_df = group_df.copy()
         expenditure_df = group_df[group_df[TMALL_COL_ORDER_STATUS] != STATUS_TRADE_SUCCESS].copy()
 
-        product_data_map[str(product_id)] = {
-            'name': product_name,
+        product_data_map[str(merchant_sku)] = {
+            'name': product_name, # 代表性名称
             'income_qty': income_df[TMALL_COL_QUANTITY].sum(),
             'income_amount': income_df[TMALL_COL_ACTUAL_PAYMENT].sum(),
             'expenditure_qty': expenditure_df[TMALL_COL_QUANTITY].sum(),
             'expenditure_amount': -expenditure_df[TMALL_COL_REFUND_AMOUNT].sum(),
-            'detail_income_df': income_df,
+            'detail_income_df': income_df, # 包含所有真实订单信息的完整DataFrame
             'detail_expenditure_df': expenditure_df
         }
     return product_data_map, successful_trades_total
 
-def _create_summary_sheet(wb, product_data_map, successful_trades_total, is_history_data):
+def _create_summary_sheet(wb, product_data_map, successful_trades_total):
     """在工作簿中创建并填充销售总结页，确保数字格式正确。"""
     ws = wb.active
     ws.title = "销售总结"
@@ -100,8 +108,7 @@ def _create_summary_sheet(wb, product_data_map, successful_trades_total, is_hist
     center_align = Alignment(horizontal='center', vertical='center')
     current_row = 1
     
-    # 根据数据源类型，动态决定第一列的标题
-    header_col_name = "商品规格" if is_history_data else "商品编号"
+    header_col_name = "商家编码"
 
     # --- 收入汇总 ---
     ws.cell(row=current_row, column=1, value="各商品收入汇总 (所有订单)").font = bold_font
@@ -111,7 +118,11 @@ def _create_summary_sheet(wb, product_data_map, successful_trades_total, is_hist
     current_row += 1
     
     grand_total_income_qty, grand_total_income_amt = 0, 0.0
-    sorted_ids = sorted(product_data_map.keys())
+    # 将 "未编码商品" 单独排序到最后
+    sorted_ids = sorted(
+        product_data_map.keys(),
+        key=lambda x: (x == "未编码商品", x)
+    )
     for prod_id in sorted_ids:
         item = product_data_map[prod_id]
         ws.append([prod_id, item['name'], item['income_qty'], item['income_amount']])
@@ -167,25 +178,23 @@ def _create_summary_sheet(wb, product_data_map, successful_trades_total, is_hist
     for col_letter, width in [('A', 35), ('B', 60), ('C', 20), ('D', 20)]:
         ws.column_dimensions[col_letter].width = width
 
-def _create_detail_sheets(wb, product_data_map, is_history_data):
+def _create_detail_sheets(wb, product_data_map, detail_headers):
     """为每个商品创建并填充详情页，确保数字格式正确。"""
     bold_font = Font(bold=True)
     center_align = Alignment(horizontal='center', vertical='center')
 
-    # 根据数据源类型，动态决定详情页的表头
-    detail_headers = DETAIL_SHEET_COLUMNS_TMALL.copy()
-    if is_history_data:
-        # '商品编号' 在列表中的索引是 4
-        detail_headers[4] = "商品规格"
-
     def format_for_detail(df, amount_col, is_negative=False):
-        if df.empty: return pd.DataFrame(columns=DETAIL_SHEET_COLUMNS_TMALL)
+        if df.empty: return pd.DataFrame(columns=detail_headers)
         detail = pd.DataFrame()
+        # 逐行提取原始数据，确保每行信息的准确性
         detail['订单编号'] = df.get(TMALL_COL_MAIN_ORDER_ID)
         detail['子订单编号'] = df.get(TMALL_COL_SUB_ORDER_ID)
         detail['订单状态'] = df.get(TMALL_COL_ORDER_STATUS)
         detail['退款状态'] = df.get(TMALL_COL_REFUND_STATUS)
-        detail['商品编号'] = df.get(TMALL_COL_PRODUCT_ID).astype(str)
+        if '商品编号' in detail_headers:
+             detail['商品编号'] = df.get(TMALL_COL_PRODUCT_ID).astype(str).replace('nan', '')
+        detail['商家编码'] = df.get(TMALL_COL_MERCHANT_SKU)
+        # 关键点：直接从原始DataFrame的列获取，保证了每行都是真实的商品标题
         detail['商品名称'] = df.get(TMALL_COL_PRODUCT_NAME)
         detail['商品属性'] = df.get(TMALL_COL_PRODUCT_ATTRIBUTES)
         detail['商品价格'] = df.get(TMALL_COL_UNIT_PRICE)
@@ -197,18 +206,31 @@ def _create_detail_sheets(wb, product_data_map, is_history_data):
         detail['发货时间'] = df.get(TMALL_COL_SHIPPING_TIME)
         detail['物流单号'] = df.get(TMALL_COL_LOGISTICS_NO)
         detail['物流公司'] = df.get(TMALL_COL_LOGISTICS_COMPANY)
-        # 注意：这里仍然使用原始的列常量列表进行列排序，以确保数据对齐
-        return detail.reindex(columns=DETAIL_SHEET_COLUMNS_TMALL).fillna('')
+        return detail.reindex(columns=detail_headers).fillna('')
 
-    for prod_id in sorted(product_data_map.keys()):
+    sorted_ids = sorted(
+        product_data_map.keys(),
+        key=lambda x: (x == "未编码商品", x)
+    )
+    
+    qty_col_idx = detail_headers.index('商品数量')
+    amt_col_idx = detail_headers.index('应结金额')
+
+    for prod_id in sorted_ids:
         item = product_data_map[prod_id]
         
         sheet_name_raw = f"{prod_id}_{item['name']}"
-        sheet_name = re.sub(r'[\\/\*\[\]\:?]', '_', sheet_name_raw)[:31]
-        try: ws = wb.create_sheet(sheet_name)
-        except: ws = wb.create_sheet(f"{prod_id}_detail")
-
-        # 使用动态生成的表头写入详情页
+        base_name = re.sub(r'[\\/\*\[\]\:?]', '_', sheet_name_raw)
+        
+        sheet_name = base_name[:31]
+        counter = 1
+        while sheet_name in wb.sheetnames:
+            counter += 1
+            suffix = f"({counter})"
+            truncated_base = base_name[:31-len(suffix)]
+            sheet_name = f"{truncated_base}{suffix}"
+        
+        ws = wb.create_sheet(sheet_name)
         ws.append(detail_headers)
         for cell in ws[1]: cell.font = bold_font; cell.alignment = center_align
         
@@ -216,30 +238,42 @@ def _create_detail_sheets(wb, product_data_map, is_history_data):
         for r in income_detail_df.itertuples(index=False): ws.append(list(r))
         
         if not income_detail_df.empty:
-            ws.append(["收入总计", "", "", "", "", "", "", "", item['income_qty'], item['income_amount']])
+            total_row = [''] * len(detail_headers)
+            total_row[0] = "收入总计"
+            total_row[qty_col_idx] = item['income_qty']
+            total_row[amt_col_idx] = item['income_amount']
+            ws.append(total_row)
+
             row_idx = ws.max_row
             for cell in ws[row_idx]: cell.font = bold_font
-            ws.cell(row=row_idx, column=9).number_format = '#,##0'
-            ws.cell(row=row_idx, column=10).number_format = '#,##0.00'
+            ws.cell(row=row_idx, column=qty_col_idx + 1).number_format = '#,##0'
+            ws.cell(row=row_idx, column=amt_col_idx + 1).number_format = '#,##0.00'
             ws.append([])
 
         exp_detail_df = format_for_detail(item['detail_expenditure_df'], TMALL_COL_REFUND_AMOUNT, True)
         if not exp_detail_df.empty:
             for r in exp_detail_df.itertuples(index=False): ws.append(list(r))
-            ws.append(["支出总计", "", "", "", "", "", "", "", item['expenditure_qty'], item['expenditure_amount']])
+            
+            total_row = [''] * len(detail_headers)
+            total_row[0] = "支出总计"
+            total_row[qty_col_idx] = item['expenditure_qty']
+            total_row[amt_col_idx] = item['expenditure_amount']
+            ws.append(total_row)
+
             row_idx = ws.max_row
             for cell in ws[row_idx]: cell.font = bold_font
-            ws.cell(row=row_idx, column=9).number_format = '#,##0'
-            ws.cell(row=row_idx, column=10).number_format = '#,##0.00'
+            ws.cell(row=row_idx, column=qty_col_idx + 1).number_format = '#,##0'
+            ws.cell(row=row_idx, column=amt_col_idx + 1).number_format = '#,##0.00'
 
         for i, col_title in enumerate(detail_headers, 1):
             max_len = max((len(str(c.value)) for c in ws[get_column_letter(i)] if c.value is not None), default=0)
             adjusted_width = min(max(max_len + 5, len(col_title) + 5, 12), 60)
             if col_title == "商品名称": adjusted_width = 70
             elif col_title == "商品属性": adjusted_width = 40
+            elif col_title == "商家编码": adjusted_width = 30
             ws.column_dimensions[get_column_letter(i)].width = adjusted_width
 
-# --- 主处理函数 (新架构) ---
+# --- 主处理函数 ---
 
 def process_tmall_data(df_raw):
     """处理天猫订单DataFrame，生成包含总结和明细的Excel Workbook对象。"""
@@ -247,32 +281,31 @@ def process_tmall_data(df_raw):
         print("天猫处理错误：输入的DataFrame为空。")
         return None
     
-    # --- 数据规范化 ---
-    # 检查并统一不同版本天猫文件的列名，使其与内部常量对齐
     df_normalized = df_raw.copy()
-    is_history_data = False  # 初始化数据源类型标志
     
-    # 历史数据CSV文件使用'商家编码'作为商品ID，且部分列名不同
+    # 历史数据CSV文件使用'商家编码'，但部分列名不同
     if '商家编码' in df_normalized.columns and TMALL_COL_PRODUCT_ID not in df_normalized.columns:
         print("  -> 检测到天猫历史数据格式(CSV)，正在进行列名适配...")
         df_normalized.rename(columns={
-            '商家编码': TMALL_COL_PRODUCT_ID,
             '标题': TMALL_COL_PRODUCT_NAME,
             '价格': TMALL_COL_UNIT_PRICE,
             '买家实际支付金额': TMALL_COL_ACTUAL_PAYMENT,
         }, inplace=True)
-        is_history_data = True # 设置标志为True
-        
-    # 后续处理流程使用规范化后的DataFrame
+    
+    # 根据源数据动态确定详情页的表头
+    detail_headers = DETAIL_SHEET_COLUMNS_TEMPLATE.copy()
+    if TMALL_COL_PRODUCT_ID not in df_normalized.columns:
+        detail_headers.remove('商品编号')
+
     df_processed = _prepare_and_validate_data(df_normalized)
     if df_processed is None: return None
         
     product_data_map, successful_trades_total = _aggregate_product_data(df_processed)
     
     wb = Workbook()
-    # 将数据源类型标志传递给Excel生成函数
-    _create_summary_sheet(wb, product_data_map, successful_trades_total, is_history_data)
-    _create_detail_sheets(wb, product_data_map, is_history_data)
+    _create_summary_sheet(wb, product_data_map, successful_trades_total)
+    # 传递动态生成的表头
+    _create_detail_sheets(wb, product_data_map, detail_headers)
     
     if "销售总结" in wb.sheetnames and wb.sheetnames[0] != "销售总结":
         wb.move_sheet("销售总结", -len(wb.sheetnames) + 1)
@@ -283,7 +316,7 @@ def process_tmall_data(df_raw):
 if __name__ == "__main__":
     TEST_INPUT_DIR = r"C:\Users\LENOVO\Desktop"
     TEST_OUTPUT_DIR = r"C:\Users\LENOVO\Desktop"
-    TEST_FILENAME = "ExportOrderList1145141919810.xlsx"
+    TEST_FILENAME = "ExportOrderList.xlsx"
 
     input_file = os.path.join(TEST_INPUT_DIR, TEST_FILENAME)
 
