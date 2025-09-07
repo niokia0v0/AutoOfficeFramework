@@ -3,6 +3,9 @@ import openpyxl
 import os
 from typing import Dict, Any
 
+#用于将源数据的敏感/隐私信息脱敏，以供公开演示
+#翻译修正：desens->anonym
+
 # ==============================================================================
 #                                  配置区
 # ==============================================================================
@@ -73,8 +76,8 @@ def main():
     # 构造输入文件的完整路径
     input_path = os.path.join(INPUT_FOLDER, INPUT_FILENAME)
 
-    # 生成输出文件名，在原始文件名前添加 "desens_" 前缀
-    output_filename = f"desens_{INPUT_FILENAME}"
+    # 生成输出文件名，在原始文件名前添加 "anonym_" 前缀
+    output_filename = f"anonym_{INPUT_FILENAME}"
     # 构造输出文件的完整路径
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 

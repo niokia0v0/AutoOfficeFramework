@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Dict, Any
 
 #用于将源数据的敏感/隐私信息脱敏，以供公开演示
+#翻译修正：desens->anonym
 
 # ==============================================================================
 #                                  配置区
@@ -155,7 +156,7 @@ def main():
             df[dy_special_col] = df[dy_special_col].apply(process_dy_status)
 
         # --- 4. 保存文件 ---
-        output_filename = f"desens_{filename}"
+        output_filename = f"anonym_{filename}"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
         try:
             if file_ext == '.csv':
